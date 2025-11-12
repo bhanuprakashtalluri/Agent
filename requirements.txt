@@ -1,0 +1,28 @@
+dotenv
+streamlit
+langgraph
+langchain
+langchain-community
+duckduckgo-search
+markdownify
+requests
+# langchain-groq
+langchain-ollama
+openpyxl
+pandas
+google-auth-oauthlib
+google-auth-httplib2
+google-api-python-client
+
+# RAG Dependencies
+chromadb
+# sentence-transformers  # Requires PyTorch (not available for Python 3.13 yet)
+pypdf
+pdfplumber
+python-docx
+# unstructured  # Heavy dependency, optional
+tiktoken
+langchain-chroma  # Alternative Chroma integration
+langchain-openrouter
+langchain-openai
+langchain.chains
