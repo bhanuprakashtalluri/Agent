@@ -17,6 +17,9 @@ data/agent_logs.xlsx
 data/vector_db/
 data/vector_db_test/
 
+# RAG documents
+RAG/documents/
+
 # Config files
 config/gmail_credentials.json
 config/gmail_token.json
