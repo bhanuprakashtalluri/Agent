@@ -15,9 +15,10 @@ from langchain_community.tools import DuckDuckGoSearchResults
 from langchain_core.messages import HumanMessage, SystemMessage, AIMessage
 from langchain.agents import create_agent
 from langgraph.checkpoint.memory import MemorySaver
+from langchain_groq import ChatGroq
 
 from tools.visit_web import visit_web
-from tools.query_database import nl2sql_query, show_database_schema, list_tables, describe_table, run_custom_sql, get_table_row_count
+from tools.query_database import nl2sql_query, show_database_schema, list_tables, describe_table, get_table_row_count
 from tools.excel_logger import log_interaction
 
 # Try to import Gmail tools, but continue if they fail
@@ -40,29 +41,41 @@ except Exception as e:
     print(f"⚠ RAG tools not available: {e}")
     print("Agent will work without document search features")
 
-
-
 load_dotenv()
 
 
+# ===================== MODEL SELECTION =====================
+# To switch between Groq API and Ollama local models:
+# 1. Uncomment the block for the model you want to use.
+# 2. Comment out the other block.
+# ===========================================================
 
-model = ChatOllama(
-    model="qwen3:4b",  # Qwen3 4B model for reasoning
+model = ChatGroq(
+    api_key=os.getenv("GROQ_API_KEY"),
+    #model="llama-3.3-70b-versatile",
+    model="llama-3.1-8b-instant",
     temperature=0.1,
-    num_ctx=4096,
-    verbose=True,
-)
+    verbose=True,)
+
+# model = ChatOllama(
+#     model="qwen3:4b",  # Qwen3 4B model for reasoning
+#     temperature=0.1,
+#     num_ctx=4096,
+#     verbose=True,)
 
 search = DuckDuckGoSearchResults()
 
 # All tools available to the agent
 tools = [
     # Web tools
-    search, 
+    search,
     visit_web,
-    
-    # Database tool (NL2SQL)
+    # Database tools
     nl2sql_query,
+    show_database_schema,
+    list_tables,
+    describe_table,
+    get_table_row_count,
 ]
 
 # Add Gmail tools if available
@@ -75,21 +88,6 @@ if rag_tools_available:
 
 memory = MemorySaver()
 search = DuckDuckGoSearchResults()
-
-
-# All tools available to the agent
-tools = [
-    # Web tools
-    search,
-    visit_web,
-    # Database tools
-    nl2sql_query,
-    show_database_schema,
-    list_tables,
-    describe_table,
-    run_custom_sql,
-    get_table_row_count,
-]
 
 # Add Gmail tools if available
 if gmail_tools_available:
@@ -130,72 +128,69 @@ def call_complete_agent(query: str):
         Agent's response text
     """
     
-    # Build system message based on available tools
-    system_message = """
-    You are an advanced AI agent. When answering, follow these steps:
-    1. Break down the user query into clear, simple steps.
-    2. For each step, explain what you are doing and why.
-    3. Use available tools directly and show which tool is used for each step.
-    4. Provide detailed, stepwise reasoning for your answer.
-    5. Summarize the final result clearly and concisely.
-    6. If you encounter an error, log the error and explain the cause.
-    7. Always log your prompt and reasoning steps for debugging.
-    Be direct, detailed, and transparent in your process.
-    By default, return only the final answer, data, and any relevant visualizations. Do not include reasoning, steps, or explanations unless the user explicitly requests them (e.g., "show steps", "explain reasoning").
+    # Stricter intent matching for all tools
+    filtered_tools = []
+    q = query.lower()
+    # ...existing code for multi-intent detection...
+    # ...existing code for mapping intents to tools...
+    # If no tools matched, fallback to web search tools
+    if not filtered_tools:
+        filtered_tools = [tool for tool in tools if getattr(tool, "__name__", "") in ["search", "visit_web"]]
 
-    **Web & Research Tools:**
-    - duckduckgo_results_json: Search the web for current information
-    - visit_web: Visit and extract content from URLs
-
-    **Customer Database Tool:**
-    - nl2sql_query: Use natural language to query the customer and order database. For queries about sales, orders, or transactions, always join the relevant tables (e.g., show customer names instead of IDs). If IDs are shown, provide a legend mapping IDs to names. Format results in clear, readable tables with column headers and currency/date formatting where appropriate. Always summarize and clarify the output for the user.
-
-    **Visualizations:**
-    - For outputs related to orders, sales, trends, comparisons, or time-series data, generate and display relevant graphs or visualizations (such as bar charts, line charts, pie charts, scatter plots, or time-series plots) to help users understand patterns and distributions. Do not generate visuals for generic numerical data unless it relates to these topics. Always accompany visuals with a brief summary or explanation.
-    """
-
-    if gmail_tools_available:
-        system_message += """
-**Gmail Tools:**
-- search_gmail: Search emails using Gmail syntax (e.g., "from:user@email.com", "subject:invoice")
-- read_gmail: Read full content of a specific email
-- get_my_email: Get the user's own email address (only use if user says 'send to myself' or 'my email')
-- send_gmail: Send emails with recipient, subject, and message body
-
-**CRITICAL RULES for sending emails:**
-- When user says "send to myself" or "my email", AUTOMATICALLY call get_my_email first (don't ask permission)
-- NEVER use placeholder emails like 'your_email@example.com', 'user@example.com', etc.
-- If recipient email is unclear (not "myself" or not provided), ask the user for it
-- ALWAYS include a clear, descriptive subject line
-- ALWAYS write a complete, well-formatted email body
-- Execute tool calls immediately without asking for confirmation
-"""
-
-    if rag_tools_available:
-        system_message += """
-**Document Search Tools (RAG):**
-- search_documents: Search through uploaded documents (PDFs, Excel, CSV, Word, etc.)
-- list_document_sources: List all documents in the database
-- get_document_stats: Get statistics about document database
-
-**When to use document search:**
-- User asks about content in their files/documents
-- Questions about uploaded PDFs, spreadsheets, or reports
-- Any query that might be answered by previously uploaded documents
-"""
-
-    system_message += """
-**How to use these tools:**
-1. For customer queries → use database tools
-2. For web research → use search and visit_web"""
-
-    if gmail_tools_available:
-        system_message += "\n3. For email tasks → use Gmail tools"
-
-    if rag_tools_available:
-        system_message += "\n4. For document questions → use RAG search tools"
-
-    system_message += "\n5. Always cite sources and be specific"
+    # Dynamically build optimized system prompt for all required tool types
+    tool_names = [getattr(t, "__name__", "") for t in filtered_tools] if filtered_tools else []
+    prompt_blocks = []
+    # Database block
+    if "nl2sql_query" in tool_names:
+        db_block = (
+            "You are a database assistant. Use this schema: "
+            "customers(id, name, email, phone, status, account_balance, join_date); "
+            "orders(id, customer_id, order_number, product, amount, status, order_date). "
+            "Join tables for related info, use LIKE for name searches. "
+            "Return only the final answer/results, not the SQL query. "
+            "Always format tabular data as markdown tables with headers and proper alignment. "
+            "Format currency and dates clearly. "
+            "Summarize and clarify output. "
+            "Only generate graphs for sales, orders, trends, or time-series data (bar, line, pie, scatter, time-series) and always provide a brief summary. "
+            "Never generate graphs for generic numbers or unrelated topics. "
+            "Be concise, direct, and log errors if any. "
+        )
+        prompt_blocks.append(db_block)
+    # Document block
+    if any(tn in tool_names for tn in ["search_documents", "list_document_sources", "get_document_stats"]):
+        prompt_blocks.append(
+            "You are a document search assistant. Use document tools to answer. "
+            "Return only relevant results. "
+            "Use for queries about PDFs, Excel, Word, CSV, reports, or uploaded files. "
+            "Summarize and clarify output. Log errors if any."
+        )
+    # Gmail block
+    if any(tn in tool_names for tn in ["search_gmail", "read_gmail", "send_gmail", "get_my_email"]):
+        prompt_blocks.append(
+            "You are an email assistant. Use Gmail tools to answer. "
+            "search_gmail: Gmail syntax (from:user@email.com, subject:invoice). "
+            "read_gmail: Read full email. get_my_email: Get user's email (for 'send to myself'). "
+            "send_gmail: Send email with recipient, subject, body. "
+            "If 'send to myself' or 'my email', call get_my_email first. "
+            "Never use placeholder emails. If unclear recipient, ask user. "
+            "Always include subject and well-formatted body. "
+            "Execute tool calls immediately. Log errors if any."
+        )
+    # Web block
+    if any(tn in tool_names for tn in ["search", "visit_web"]):
+        prompt_blocks.append(
+            "You are a web assistant. Use web tools to answer. "
+            "duckduckgo_results_json: Search web for current info. visit_web: Extract content from URLs. "
+            "Return only relevant results. Summarize and clarify output. Log errors if any."
+        )
+    # Fallback block
+    if not prompt_blocks:
+        prompt_blocks.append(
+            "You are an AI assistant. Use available tools to answer. "
+            "Return only relevant results. Summarize and clarify output. Log errors if any."
+        )
+    # Merge blocks into one system prompt
+    system_message = "\n".join(prompt_blocks)
 
     # Stricter intent matching for all tools
     filtered_tools = []
@@ -211,6 +206,10 @@ def call_complete_agent(query: str):
     email_phrases = ["search email", "send email", "read email", "get my email", "email me"]
     web_keywords = ["search", "find", "web", "news", "capital", "who", "what", "where", "when", "how", "lookup", "information", "facts"]
     web_phrases = ["search the web", "find info", "lookup", "get information", "web search", "current news", "latest news"]
+
+    # Detect raw SQL queries
+    sql_keywords = ["select ", "insert ", "update ", "delete ", "join ", "where ", "from ", "group by", "order by"]
+    is_sql_query = query.strip().lower().startswith(tuple([kw.strip() for kw in sql_keywords]))
 
     intents = set()
     # Phrase-level matching
@@ -275,17 +274,41 @@ def call_complete_agent(query: str):
     # Save current intents to context history
     call_complete_agent.context_history.append({"query": query, "intents": intents})
 
-    # Map intents to tools (handle all relevant tools for multi-intent)
-    for tool in tools:
-        tool_name = getattr(tool, "__name__", "")
-        if "db" in intents and tool_name in ["nl2sql_query"]:
-            filtered_tools.append(tool)
-        if "doc" in intents and tool_name in ["search_documents", "list_document_sources", "get_document_stats"]:
-            filtered_tools.append(tool)
-        if "email" in intents and tool_name in ["search_gmail", "read_gmail", "send_gmail", "get_my_email"]:
-            filtered_tools.append(tool)
-        if "web" in intents and tool_name in ["search", "visit_web"]:
-            filtered_tools.append(tool)
+    # --- Refactored Tool Selection Logic ---
+    filtered_tools = []
+    tool_name_map = {getattr(tool, "__name__", ""): tool for tool in tools}
+
+    if is_sql_query:
+        # Custom SQL queries are disabled; fallback to web tools
+        pass
+    else:
+        # For NL database queries
+        if "db" in intents and "nl2sql_query" in tool_name_map:
+            filtered_tools.append(tool_name_map["nl2sql_query"])
+        # Document tools
+        doc_tools = ["search_documents", "list_document_sources", "get_document_stats"]
+        if "doc" in intents:
+            for tname in doc_tools:
+                if tname in tool_name_map:
+                    filtered_tools.append(tool_name_map[tname])
+        # Email tools
+        email_tools = ["search_gmail", "read_gmail", "send_gmail", "get_my_email"]
+        if "email" in intents:
+            for tname in email_tools:
+                if tname in tool_name_map:
+                    filtered_tools.append(tool_name_map[tname])
+        # Web tools
+        web_tools = ["search", "visit_web"]
+        if "web" in intents:
+            for tname in web_tools:
+                if tname in tool_name_map:
+                    filtered_tools.append(tool_name_map[tname])
+
+    # Fallback: if no tools matched, use web search tools
+    if not filtered_tools:
+        for tname in ["search", "visit_web"]:
+            if tname in tool_name_map:
+                filtered_tools.append(tool_name_map[tname])
 
     # If no tools matched, fallback to web search tools
     if not filtered_tools:
@@ -314,22 +337,70 @@ def call_complete_agent(query: str):
 
         final_output = response["messages"][-1].content
 
-        # Improved success/error logic
+        # Post-process: format tabular SQL results as markdown tables if detected
+        def format_as_markdown_table(text):
+            lines = [line.strip() for line in text.splitlines() if line.strip()]
+            # Detect simple table: lines with '|' and at least 2 lines
+            if len(lines) >= 2 and all("|" in line for line in lines):
+                # Add markdown table header separator if missing
+                if not any("---" in line for line in lines):
+                    header = lines[0]
+                    num_cols = header.count("|")
+                    sep = "|".join(["---"] * (num_cols + 1))
+                    lines.insert(1, sep)
+                return "\n".join(["```markdown", *lines, "```"])
+            return text
+
         output_str = str(final_output).strip() if final_output is not None else ""
+        # Only format if output looks like a table
+        if output_str and "|" in output_str:
+            output_str = format_as_markdown_table(output_str)
+
+        # Suppress gibberish output
+        import re
+        def is_gibberish(text):
+            # Empty or common no-result phrases
+            if not text or text.lower() in ["no output", "none", "null", "no results found."]:
+                return True
+            # Excessive length with no structure
+            if len(text) > 2000 and not ("|" in text or "error" in text.lower() or "summary" in text.lower() or "table" in text.lower()):
+                return True
+            # Excessive repetition of same character/word
+            if len(set(text)) < 10 and len(text) > 100:
+                return True
+            if re.search(r'(.)\1{20,}', text):
+                return True
+            # Non-ASCII or control characters
+            if re.search(r'[^\x20-\x7E\n\r\t]', text):
+                return True
+            # No sentence structure (no periods, no line breaks, no table, no keywords)
+            if len(text) > 500 and not any(x in text for x in ["|", "error", "summary", "table", ".", "\n"]):
+                return True
+            # Looks like random tokens or hex
+            if re.search(r'\b[a-f0-9]{16,}\b', text):
+                return True
+            return False
+
+        # if is_gibberish(output_str):
+        #     output_str = "No meaningful results returned. Please check your query or try again."
+        #     status = "Error"
+        # else:
         if not output_str or output_str.lower() in ["no output", "none", "null", "no results found."]:
             status = "Error"
         else:
             status = "Success"
 
-        log_interaction(
-            user_input=query,
-            tools_used=tools_used,
-            agent_messages=messages,
-            output=final_output,
-            status=status
-        )
-
-        return final_output
+        import threading
+        def log_task():
+            log_interaction(
+                user_input=query,
+                tools_used=tools_used,
+                agent_messages=messages,
+                output=output_str,
+                status=status
+            )
+        threading.Thread(target=log_task, daemon=True).start()
+        return output_str
     except Exception as e:
         error_msg = f"Error: {str(e)}"
         log_interaction(

@@ -23,6 +23,5 @@ python-docx
 # unstructured  # Heavy dependency, optional
 tiktoken
 langchain-chroma  # Alternative Chroma integration
-langchain-openrouter
-langchain-openai
+langchain-groq
 langchain.chains
