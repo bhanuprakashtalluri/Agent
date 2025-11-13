@@ -13,6 +13,10 @@ ENV/
 data/customers.db
 data/agent_logs.xlsx
 
+# Vector DBs and all subfolders/files
+data/vector_db/
+data/vector_db_test/
+
 # Config files
 config/gmail_credentials.json
 config/gmail_token.json

@@ -6,7 +6,7 @@ def list_tables() -> str:
         A string with all table names, one per line.
     """
     try:
-        conn = sqlite3.connect(DB_PATH)
+        conn = sqlite3.connect(f"file:{DB_PATH}?mode=ro", uri=True)
         cursor = conn.cursor()
         cursor.execute("SELECT name FROM sqlite_master WHERE type='table';")
         tables = [row[0] for row in cursor.fetchall()]
@@ -25,7 +25,7 @@ def describe_table(table_name: str) -> str:
         A string listing columns and types, or error message.
     """
     try:
-        conn = sqlite3.connect(DB_PATH)
+        conn = sqlite3.connect(f"file:{DB_PATH}?mode=ro", uri=True)
         cursor = conn.cursor()
         cursor.execute(f"PRAGMA table_info({table_name});")
         columns = cursor.fetchall()
@@ -49,7 +49,7 @@ def run_custom_sql(sql: str) -> str:
     try:
         if not sql.strip().lower().startswith("select"):
             return "Only SELECT queries are allowed."
-        conn = sqlite3.connect(DB_PATH)
+        conn = sqlite3.connect(f"file:{DB_PATH}?mode=ro", uri=True)
         cursor = conn.cursor()
         cursor.execute(sql)
         results = cursor.fetchall()
@@ -74,7 +74,7 @@ def get_table_row_count(table_name: str) -> str:
         String with row count or error message.
     """
     try:
-        conn = sqlite3.connect(DB_PATH)
+        conn = sqlite3.connect(f"file:{DB_PATH}?mode=ro", uri=True)
         cursor = conn.cursor()
         cursor.execute(f"SELECT COUNT(*) FROM {table_name};")
         count = cursor.fetchone()[0]
@@ -90,7 +90,7 @@ def show_database_schema() -> str:
         A formatted string showing all tables and their columns.
     """
     try:
-        conn = sqlite3.connect(DB_PATH)
+        conn = sqlite3.connect(f"file:{DB_PATH}?mode=ro", uri=True)
         cursor = conn.cursor()
         cursor.execute("SELECT name FROM sqlite_master WHERE type='table';")
         tables = [row[0] for row in cursor.fetchall()]
@@ -122,6 +122,46 @@ Table: orders (order_number, product, amount, status, order_date, customer_id)
 
 Only generate the SQL query, do not explain or add extra text.
 """
+def split_to_subqueries_with_llm(user_question: str) -> list:
+    """
+    Use ChatOllama (Qwen3:4b) to break down a multi-part user question into distinct sub-queries.
+    Args:
+        user_question: The user's multi-part question in English
+    Returns:
+        List of sub-queries
+    """
+    split_prompt = (
+        "You are an expert database assistant. Given the following user question, break it down into distinct sub-queries. "
+        "Each sub-query should be answerable by a single SQL SELECT statement. "
+        "Return only the sub-queries as a numbered list, no explanations.\n\nUser question: " + user_question
+    )
+    response = model.invoke(split_prompt)
+    if hasattr(response, "content"):
+        text = response.content
+    else:
+        text = str(response)
+    # Parse numbered list into sub-queries
+    import re
+    sub_queries = re.findall(r"\d+\.\s*(.+)", text)
+    if not sub_queries:
+        # fallback: split by newlines
+        sub_queries = [line.strip() for line in text.splitlines() if line.strip()]
+    return sub_queries
+
+def handle_multi_query_with_llm(user_question: str) -> str:
+    """
+    Use LLM to split multi-part question, then run nl2sql_query for each sub-query and aggregate results.
+    Args:
+        user_question: The user's multi-part question in English
+    Returns:
+        Aggregated results from all sub-queries
+    """
+    sub_queries = split_to_subqueries_with_llm(user_question)
+    results = []
+    for idx, q in enumerate(sub_queries, 1):
+        result = nl2sql_query(q)
+        results.append(f"Q{idx}: {q}\n{result}\n")
+    return '\n'.join(results)
 
 # Initialize the reasoning LLM
 model = ChatOllama(
@@ -150,7 +190,7 @@ def nl2sql_query(user_question: str) -> str:
     if not sql_str.strip().lower().startswith("select"):
         return f"Error: Only SELECT queries are allowed. Model generated: {sql_str}"
     try:
-        conn = sqlite3.connect(DB_PATH)
+        conn = sqlite3.connect(f"file:{DB_PATH}?mode=ro", uri=True)
         cursor = conn.cursor()
         cursor.execute(sql_str)
         results = cursor.fetchall()
