@@ -35,6 +35,11 @@ except Exception as e:
 rag_tools_available = False
 try:
     from tools.rag_tools import search_documents, list_document_sources, get_document_stats
+    # read_csv may be added dynamically below; import it if present
+    try:
+        from tools.rag_tools import read_csv
+    except Exception:
+        read_csv = None
     rag_tools_available = True
     print("✓ RAG tools loaded successfully")
 except Exception as e:
@@ -84,7 +89,11 @@ if gmail_tools_available:
 
 # Add RAG tools if available
 if rag_tools_available:
-    tools.extend([search_documents, list_document_sources, get_document_stats])
+    # Add RAG tools and optional read_csv if available
+    rag_list = [search_documents, list_document_sources, get_document_stats]
+    if 'read_csv' in globals() and read_csv is not None:
+        rag_list.append(read_csv)
+    tools.extend(rag_list)
 
 memory = MemorySaver()
 search = DuckDuckGoSearchResults()
@@ -104,42 +113,13 @@ config = {"configurable": {"thread_id": "abc123"}}
 
 
 def call_complete_agent(query: str):
-    # Contextual intent detection: use previous queries/responses to inform current intent
-    if not hasattr(call_complete_agent, "context_history"):
-        call_complete_agent.context_history = []
-    # Add previous query to context history
-    if len(call_complete_agent.context_history) > 10:
-        call_complete_agent.context_history.pop(0)
-    # If this is a follow-up (e.g., starts with 'and', 'also', 'show me more', etc.), use last intent
-    followup_phrases = ["and", "also", "show me more", "what about", "next", "continue"]
-    is_followup = any(query.lower().startswith(phrase) for phrase in followup_phrases)
-    last_intents = set()
-    if is_followup and call_complete_agent.context_history:
-        last_intents = call_complete_agent.context_history[-1].get("intents", set())
-
-    # ...existing code for phrase/keyword/multi-intent detection...
-    """
-    Call agent with all tools and automatic Excel logging
-    
-    Args:
-        query: User's input query
-        
-    Returns:
-        Agent's response text
-    """
-    
-    # Stricter intent matching for all tools
-    filtered_tools = []
-    q = query.lower()
-    # ...existing code for multi-intent detection...
-    # ...existing code for mapping intents to tools...
-    # If no tools matched, fallback to web search tools
-    if not filtered_tools:
-        filtered_tools = [tool for tool in tools if getattr(tool, "__name__", "") in ["search", "visit_web"]]
-
-    # Dynamically build optimized system prompt for all required tool types
-    tool_names = [getattr(t, "__name__", "") for t in filtered_tools] if filtered_tools else []
+    # --- System Prompt Construction ---
     prompt_blocks = []
+    # Use the global `tools` list to determine available tool names here.
+    # `filtered_tools` is computed later in this function, so referencing it
+    # before assignment would raise an UnboundLocalError. Use `tools` as the
+    # available toolset for prompt construction and intent-aware blocks.
+    tool_names = [getattr(t, "__name__", "") for t in tools] if tools else []
     # Database block
     if "nl2sql_query" in tool_names:
         db_block = (
@@ -191,39 +171,69 @@ def call_complete_agent(query: str):
         )
     # Merge blocks into one system prompt
     system_message = "\n".join(prompt_blocks)
+    # Contextual intent detection: use previous queries/responses to inform current intent
+    if not hasattr(call_complete_agent, "context_history"):
+        call_complete_agent.context_history = []
+    # Add previous query to context history
+    if len(call_complete_agent.context_history) > 10:
+        call_complete_agent.context_history.pop(0)
+    # If this is a follow-up (e.g., starts with 'and', 'also', 'show me more', etc.), use last intent
+    followup_phrases = ["and", "also", "show me more", "what about", "next", "continue"]
+    is_followup = any(query.lower().startswith(phrase) for phrase in followup_phrases)
+    last_intents = set()
+    if is_followup and call_complete_agent.context_history:
+        last_intents = call_complete_agent.context_history[-1].get("intents", set())
 
-    # Stricter intent matching for all tools
-    filtered_tools = []
-    q = query.lower()
-    # Multi-intent support: detect multiple intents in one query
+    # ...existing code for phrase/keyword/multi-intent detection...
+    """
+    Call agent with all tools and automatic Excel logging
+    
+    Args:
+        query: User's input query
+        
+    Returns:
+        Agent's response text
+    """
+    
 
-    # Expanded phrase-level and multi-intent detection
-    db_keywords = ["customer", "order", "database", "info", "details", "history", "client", "account", "user"]
-    db_phrases = ["show customer", "get customer", "customer details", "order history", "list customers", "find customer"]
-    doc_keywords = ["document", "pdf", "excel", "word", "csv", "file", "report", "spreadsheet"]
-    doc_phrases = ["search documents", "find document", "list documents", "document stats", "upload file", "scan file"]
-    email_keywords = ["email", "gmail", "send to myself", "my email", "mail", "inbox", "compose email", "read email"]
-    email_phrases = ["search email", "send email", "read email", "get my email", "email me"]
-    web_keywords = ["search", "find", "web", "news", "capital", "who", "what", "where", "when", "how", "lookup", "information", "facts"]
-    web_phrases = ["search the web", "find info", "lookup", "get information", "web search", "current news", "latest news"]
+    # --- Optimized Intent Detection ---
+    import difflib
+    def fuzzy_match(query, choices, threshold=0.8):
+        matches = set()
+        for choice in choices:
+            ratio = difflib.SequenceMatcher(None, query, choice).ratio()
+            if ratio >= threshold:
+                matches.add(choice)
+        return matches
+
+    # Expanded keyword/phrase lists
+    db_keywords = ["customer", "order", "database", "info", "details", "history", "client", "account", "user", "sql", "table", "row", "column"]
+    db_phrases = ["show customer", "get customer", "customer details", "order history", "list customers", "find customer", "database query", "fetch from database"]
+    doc_keywords = ["document", "pdf", "excel", "word", "csv", "file", "report", "spreadsheet", "upload", "scan", "extract", "address_details"]
+    doc_phrases = ["search documents", "find document", "list documents", "document stats", "upload file", "scan file", "extract from file", "read csv", "address_details.csv"]
+    email_keywords = ["email", "gmail", "send to myself", "my email", "mail", "inbox", "compose email", "read email", "send mail", "receive mail"]
+    email_phrases = ["search email", "send email", "read email", "get my email", "email me", "compose email", "send gmail"]
+    web_keywords = ["search", "find", "web", "news", "capital", "who", "what", "where", "when", "how", "lookup", "information", "facts", "internet", "online"]
+    web_phrases = ["search the web", "find info", "lookup", "get information", "web search", "current news", "latest news", "search online"]
 
     # Detect raw SQL queries
     sql_keywords = ["select ", "insert ", "update ", "delete ", "join ", "where ", "from ", "group by", "order by"]
     is_sql_query = query.strip().lower().startswith(tuple([kw.strip() for kw in sql_keywords]))
 
     intents = set()
-    # Phrase-level matching
+    q = query.lower()
+    # Fuzzy phrase-level matching
     for phrase in db_phrases:
-        if phrase in q:
+        if phrase in q or fuzzy_match(q, [phrase]):
             intents.add("db")
     for phrase in doc_phrases:
-        if phrase in q:
+        if phrase in q or fuzzy_match(q, [phrase]):
             intents.add("doc")
     for phrase in email_phrases:
-        if phrase in q:
+        if phrase in q or fuzzy_match(q, [phrase]):
             intents.add("email")
     for phrase in web_phrases:
-        if phrase in q:
+        if phrase in q or fuzzy_match(q, [phrase]):
             intents.add("web")
     # Keyword-level matching
     if any(kw in q for kw in db_keywords):
@@ -242,16 +252,16 @@ def call_complete_agent(query: str):
             parts = [p.strip() for p in q.split(splitter) if p.strip()]
             for part in parts:
                 for phrase in db_phrases:
-                    if phrase in part:
+                    if phrase in part or fuzzy_match(part, [phrase]):
                         intents.add("db")
                 for phrase in doc_phrases:
-                    if phrase in part:
+                    if phrase in part or fuzzy_match(part, [phrase]):
                         intents.add("doc")
                 for phrase in email_phrases:
-                    if phrase in part:
+                    if phrase in part or fuzzy_match(part, [phrase]):
                         intents.add("email")
                 for phrase in web_phrases:
-                    if phrase in part:
+                    if phrase in part or fuzzy_match(part, [phrase]):
                         intents.add("web")
                 if any(kw in part for kw in db_keywords):
                     intents.add("db")
@@ -266,6 +276,13 @@ def call_complete_agent(query: str):
     if last_intents:
         intents.update(last_intents)
 
+    # Heuristic: prioritize document-related intent for explicit file/read queries (CSV, Excel, read/open file)
+    file_indicators = [".csv", "csv", "read csv", "read file", "open file", "load csv", "upload file", "read excel", "xlsx", "xls", "address_details"]
+    if any(ind in q for ind in file_indicators) and not is_sql_query:
+        # If the query explicitly mentions a file or read/upload action, prefer document tools
+        intents.discard("db")
+        intents.add("doc")
+
     # Simple intent classifier fallback for ambiguous queries
     ambiguous = len(intents) == 0 or (len(q.split()) <= 3 and "web" not in intents)
     if ambiguous:
@@ -279,40 +296,29 @@ def call_complete_agent(query: str):
     tool_name_map = {getattr(tool, "__name__", ""): tool for tool in tools}
 
     if is_sql_query:
-        # Custom SQL queries are disabled; fallback to web tools
         pass
     else:
-        # For NL database queries
         if "db" in intents and "nl2sql_query" in tool_name_map:
             filtered_tools.append(tool_name_map["nl2sql_query"])
-        # Document tools
         doc_tools = ["search_documents", "list_document_sources", "get_document_stats"]
         if "doc" in intents:
             for tname in doc_tools:
                 if tname in tool_name_map:
                     filtered_tools.append(tool_name_map[tname])
-        # Email tools
         email_tools = ["search_gmail", "read_gmail", "send_gmail", "get_my_email"]
         if "email" in intents:
             for tname in email_tools:
                 if tname in tool_name_map:
                     filtered_tools.append(tool_name_map[tname])
-        # Web tools
         web_tools = ["search", "visit_web"]
         if "web" in intents:
             for tname in web_tools:
                 if tname in tool_name_map:
                     filtered_tools.append(tool_name_map[tname])
-
-    # Fallback: if no tools matched, use web search tools
     if not filtered_tools:
         for tname in ["search", "visit_web"]:
             if tname in tool_name_map:
                 filtered_tools.append(tool_name_map[tname])
-
-    # If no tools matched, fallback to web search tools
-    if not filtered_tools:
-        filtered_tools = [tool for tool in tools if getattr(tool, "__name__", "") in ["search", "visit_web"]]
 
     try:
         response = agent.invoke({

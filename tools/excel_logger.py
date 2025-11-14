@@ -1,6 +1,7 @@
 from difflib import SequenceMatcher
 
 def get_cached_response(query: str, threshold: float = 0.8):
+    print(f"\n[get_cached_response] Input: query={query}, threshold={threshold}")
     """
     Search the Excel log for a similar user query and return the cached output if found.
     Args:
@@ -10,6 +11,7 @@ def get_cached_response(query: str, threshold: float = 0.8):
         Dict with cached response (output, user_input, timestamp, status) or None if not found
     """
     if not os.path.exists(EXCEL_LOG_PATH):
+        print("[get_cached_response] Excel log not found.")
         return None
     wb = load_workbook(EXCEL_LOG_PATH)
     ws = wb.active
@@ -27,8 +29,10 @@ def get_cached_response(query: str, threshold: float = 0.8):
                 "status": row[5],
                 "similarity": score
             }
+    print(f"[get_cached_response] Output: {best_match}")
     return best_match
 def get_conversation_history(last_n: int = 5, all_history: bool = False):
+    print(f"\n[get_conversation_history] Input: last_n={last_n}, all_history={all_history}")
     """
     Retrieve recent or all conversation history from the Excel log.
     Args:
@@ -38,6 +42,7 @@ def get_conversation_history(last_n: int = 5, all_history: bool = False):
         List of dicts with keys: timestamp, user_input, output, status
     """
     if not os.path.exists(EXCEL_LOG_PATH):
+        print("[get_conversation_history] Excel log not found.")
         return []
     wb = load_workbook(EXCEL_LOG_PATH)
     ws = wb.active
@@ -51,6 +56,7 @@ def get_conversation_history(last_n: int = 5, all_history: bool = False):
             "output": row[4],
             "status": row[5],
         })
+    print(f"[get_conversation_history] Output: {history if all_history else history[-last_n:]}")
     if all_history:
         return history
     return history[-last_n:] if len(history) >= last_n else history
@@ -65,6 +71,7 @@ EXCEL_LOG_PATH = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'logs'
 
 
 def initialize_excel_log():
+    print("\n[initialize_excel_log] Called")
     """Create Excel file with headers if it doesn't exist"""
     if not os.path.exists(EXCEL_LOG_PATH):
         wb = Workbook()

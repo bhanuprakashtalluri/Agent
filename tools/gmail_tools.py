@@ -18,6 +18,7 @@ TOKEN_PATH = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'config', 
 
 def get_gmail_service():
     """Authenticate and return Gmail API service"""
+    print("\n[get_gmail_service] Called")
     creds = None
     
     # Load existing token
@@ -52,17 +53,18 @@ def get_my_email() -> str:
     Returns:
         The user's email address
     """
+    print("\n[get_my_email] Called")
     try:
         service, error = get_gmail_service()
         if error:
+            print(f"[get_my_email] Error: {error}")
             return f"Error: {error}"
-        
         profile = service.users().getProfile(userId='me').execute()
         email = profile.get('emailAddress', 'Unknown')
-        
+        print(f"[get_my_email] Output: {email}")
         return f"Your email address is: {email}"
-    
     except Exception as e:
+        print(f"[get_my_email] Exception: {str(e)}")
         return f"Error getting email address: {str(e)}"
 
 
@@ -76,6 +78,7 @@ def search_gmail(query: str, max_results: int = 10) -> str:
     Returns:
         List of matching emails with basic metadata and snippets
     """
+    print(f"\n[search_gmail] Input: query={query}, max_results={max_results}")
     try:
         service, error = get_gmail_service()
         if error:
