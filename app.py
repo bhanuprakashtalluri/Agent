@@ -104,40 +104,45 @@ with st.sidebar:
     st.markdown("---")
 
     # --- Session History Sidebar Section ---
-    history = get_conversation_history(all_history=True)
-    from collections import defaultdict
-    import re, datetime
-    # Group sessions by timestamp
-    session_groups = defaultdict(list)
-    for entry in history:
-        match = re.match(r"(\d{4}-\d{2}-\d{2} \d{2}:\d{2})", str(entry['timestamp']))
-        session_key = match.group(1) if match else str(entry['timestamp'])
-        session_groups[session_key].append(entry)
-    sorted_sessions = sorted(session_groups.items(), reverse=True)
-    # Prepare session summary list
-    session_summaries = []
-    for session_key, exchanges in sorted_sessions:
-        dt = session_key.split()[1] if ' ' in session_key else session_key
-        first_user = exchanges[0]['user_input'][:60] + ("..." if len(exchanges[0]['user_input']) > 60 else "")
-        session_summaries.append({
-            "label": f"{first_user} [{dt}]",
-            "key": session_key,
-            "exchanges": exchanges
-        })
-    st.markdown("<div style='font-size:0.85em;'><b>🗂️ Recent Sessions</b></div>", unsafe_allow_html=True)
-    # Only apply compact style to session history buttons, not document management buttons
-    if session_summaries:
-        recent_sessions = session_summaries[:5]
-        session_labels = [session["label"] for session in recent_sessions]
-        selected_label = st.radio("Select a recent session:", session_labels, key="recent_session_radio", label_visibility="collapsed")
-        # Find the selected session key
-        for session in recent_sessions:
-            if session["label"] == selected_label:
-                st.session_state.selected_session_key = session["key"]
-                break
-        st.button("View All", key="view_all_sessions")
-    else:
-        st.info("No session history found.")
+    show_history = st.button("Show History", key="show_history", help="Display previous session history")
+    if show_history:
+        history = get_conversation_history(all_history=True)
+        from collections import defaultdict
+        import re, datetime
+        # Group sessions by timestamp
+        session_groups = defaultdict(list)
+        for entry in history:
+            match = re.match(r"(\d{4}-\d{2}-\d{2} \d{2}:\d{2})", str(entry['timestamp']))
+            session_key = match.group(1) if match else str(entry['timestamp'])
+            session_groups[session_key].append(entry)
+        sorted_sessions = sorted(session_groups.items(), reverse=True)
+        # Prepare session summary list
+        session_summaries = []
+        for session_key, exchanges in sorted_sessions:
+            dt = session_key.split()[1] if ' ' in session_key else session_key
+            first_user = exchanges[0]['user_input'][:60] + ("..." if len(exchanges[0]['user_input']) > 60 else "")
+            session_summaries.append({
+                "label": f"{first_user} [{dt}]",
+                "key": session_key,
+                "exchanges": exchanges
+            })
+        st.markdown("<div style='font-size:0.85em;'><b>🗂️ Recent Sessions</b></div>", unsafe_allow_html=True)
+        # Only apply compact style to session history buttons, not document management buttons
+        if session_summaries:
+            recent_sessions = session_summaries[:5]
+            session_labels = [session["label"] for session in recent_sessions]
+            selected_label = st.radio("Select a recent session:", session_labels, key="recent_session_radio", label_visibility="collapsed")
+            # Find the selected session key
+            for session in recent_sessions:
+                if session["label"] == selected_label:
+                    st.session_state.selected_session_key = session["key"]
+                    break
+            st.button("View All", key="view_all_sessions")
+        else:
+            st.info("No session history found.")
+    # Note: session history UI is shown only when 'Show History' is clicked above.
+    # The interactive recent sessions UI is intentionally not loaded by default to
+    # avoid reading logs/history unless explicitly requested by the user.
 
     # Fixed bottom: Log Summary (smaller font)
     st.markdown("<hr style='margin:0.5em 0;'>", unsafe_allow_html=True)
