@@ -2,7 +2,8 @@ import sqlite3
 import os
 from langchain_ollama import ChatOllama
 from tools.cache_manager import CacheManager
-from tools.llm_cache import cached_invoke, cached_sql_query
+from tools.llm_cache import cached_invoke, cached_sql_query, DEFAULT_CACHE
+from tools.query_store import DEFAULT_QUERY_STORE
 
 DB_PATH = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'data', 'customers.db')
 
@@ -16,7 +17,7 @@ Table: orders (order_number, product, amount, status, order_date, customer_id)
 
 IMPORTANT:
 When searching for names (e.g., 'John' or 'John Smith'), always use a case-insensitive LIKE clause with wildcards on both sides: WHERE name LIKE '%John%' or WHERE name LIKE '%John Smith%'.
-If the exact name is not found, also search for similar names using LIKE with each word in the query (e.g., WHERE name LIKE '%John%' OR name LIKE '%Smith%').
+If the exact name is not found, also search for similar names using LIKE with each word in the query (e.g., WHERE name LIKE '%John%' OR WHERE name LIKE '%Smith%').
 If no exact match is found, return similar names found in the database and indicate that these are similar matches.
 
 When returning results for similar matches, clearly state that no exact match was found for the searched name. Group and label orders under each actual customer name, not under the searched name. Do not mislabel or merge data. Example:
@@ -56,7 +57,7 @@ def split_to_subqueries_with_llm(user_question: str) -> list:
         "Each sub-query should be answerable by a single SQL SELECT statement. "
         "Return only the sub-queries as a numbered list, no explanations.\n\nUser question: " + user_question
     )
-    text = cached_invoke(model, split_prompt, cache, cache_type="llm_split", ttl_seconds=300, model_name=str(getattr(model, 'model', 'qwen3')))
+    text = cached_invoke(model, split_prompt, cache, cache_type="llm_split", ttl_seconds=300, model_name=str(getattr(model, 'model', 'qwen3')), cache=cache, query_store=DEFAULT_QUERY_STORE)
     print(f"[split_to_subqueries_with_llm] Raw LLM response: {text}")
     # Parse numbered list into sub-queries
     import re
@@ -104,7 +105,7 @@ def nl2sql_query(user_question: str) -> str:
     """
     prompt = SYSTEM_PROMPT + f"\nUser question: {user_question}\nSQL:"
     sql_str = cached_invoke(model, prompt, cache, cache_type="nl2sql",
-                            ttl_seconds=60, model_name=str(getattr(model, 'model', 'qwen3')))
+                            ttl_seconds=60, model_name=str(getattr(model, 'model', 'qwen3')), cache=cache, query_store=DEFAULT_QUERY_STORE)
     # Print raw LLM response (string)
     print("\n--- LLM Raw Response ---")
     print(sql_str)
@@ -125,7 +126,7 @@ def nl2sql_query(user_question: str) -> str:
             conn.close()
             return cols, rows
 
-        columns, results = cached_sql_query(sql_str, executor, cache, cache_type="sql_results", ttl_seconds=30)
+        columns, results = cached_sql_query(sql_str, executor, cache, cache_type="sql_results", ttl_seconds=30, query_store=DEFAULT_QUERY_STORE)
         print("\n--- Raw DB Results ---")
         print("Columns:", columns)
         print("Rows:", results)
@@ -267,4 +268,3 @@ def show_database_schema() -> str:
     except Exception as e:
         print(f"[show_database_schema] Error: {str(e)}")
         return f"Error retrieving schema: {str(e)}"
-

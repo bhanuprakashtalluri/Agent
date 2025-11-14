@@ -1,5 +1,8 @@
 from difflib import SequenceMatcher
+from .llm_cache import cached_tool
 
+
+@cached_tool(ttl_seconds=60 * 30, cache_type="excel_get_cached_response", write_to_query_store=True)
 def get_cached_response(query: str, threshold: float = 0.8):
     print(f"\n[get_cached_response] Input: query={query}, threshold={threshold}")
     """
@@ -31,6 +34,7 @@ def get_cached_response(query: str, threshold: float = 0.8):
             }
     print(f"[get_cached_response] Output: {best_match}")
     return best_match
+@cached_tool(ttl_seconds=60 * 5, cache_type="excel_history", write_to_query_store=True)
 def get_conversation_history(last_n: int = 5, all_history: bool = False):
     print(f"\n[get_conversation_history] Input: last_n={last_n}, all_history={all_history}")
     """

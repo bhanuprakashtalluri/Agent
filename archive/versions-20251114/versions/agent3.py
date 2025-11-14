@@ -8,7 +8,7 @@ from langchain.agents import create_agent
 from langgraph.checkpoint.memory import MemorySaver
 
 from tools.visit_web import visit_web
-from tools.query_database import query_customer_info, query_customer_orders, list_all_customers
+from tools.db_tools import query_customer_info, query_customer_orders, list_all_customers
 
 
 load_dotenv()

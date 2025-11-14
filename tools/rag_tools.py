@@ -9,6 +9,7 @@ from typing import Optional
 from RAG.vector_store import VectorStoreManager
 from pathlib import Path
 import pandas as pd
+from .llm_cache import cached_tool
 
 
 # Initialize vector store (singleton pattern)
@@ -27,6 +28,7 @@ def get_vector_store() -> VectorStoreManager:
 
 
 @tool
+@cached_tool(ttl_seconds=60 * 5, cache_type="rag_search", write_to_query_store=True)
 def search_documents(query: str, num_results: int = 3) -> str:
     """
     Search through uploaded documents using semantic similarity.
@@ -92,6 +94,7 @@ def search_documents(query: str, num_results: int = 3) -> str:
 
 
 @tool
+@cached_tool(ttl_seconds=60 * 30, cache_type="rag_list_sources", write_to_query_store=True)
 def list_document_sources() -> str:
     """
     List all documents that have been uploaded to the system.
@@ -138,7 +141,8 @@ def list_document_sources() -> str:
         return f"Error listing documents: {str(e)}"
 
 
-@tool  
+@tool
+@cached_tool(ttl_seconds=60 * 5, cache_type="rag_stats", write_to_query_store=True)
 def get_document_stats() -> str:
     """
     Get statistics about the document database.
@@ -170,6 +174,7 @@ rag_tools = [search_documents, list_document_sources, get_document_stats]
 
 
 @tool
+@cached_tool(ttl_seconds=60 * 5, cache_type="read_csv", write_to_query_store=True)
 def read_csv(filename: str, preview_rows: int = 20) -> str:
     """
     Read a CSV file from the project's allowed directories and return a preview.

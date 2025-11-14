@@ -6,6 +6,7 @@ from googleapiclient.discovery import build
 import os
 import base64
 from email.mime.text import MIMEText
+from .llm_cache import cached_tool
 
 
 # Gmail API scopes
@@ -45,6 +46,7 @@ def get_gmail_service():
 
 
 @tool
+@cached_tool(ttl_seconds=60 * 60, cache_type="gmail_profile", write_to_query_store=True)
 def get_my_email() -> str:
     """
     Get the authenticated user's own email address.
@@ -69,6 +71,7 @@ def get_my_email() -> str:
 
 
 @tool
+@cached_tool(ttl_seconds=60 * 5, cache_type="gmail_search", write_to_query_store=True)
 def search_gmail(query: str, max_results: int = 10) -> str:
     """
     Search Gmail for emails matching the query string.
@@ -123,6 +126,7 @@ def search_gmail(query: str, max_results: int = 10) -> str:
 
 
 @tool
+@cached_tool(ttl_seconds=60 * 5, cache_type="gmail_read", write_to_query_store=True)
 def read_gmail(email_id: str) -> str:
     """
     Read the full content of a specific Gmail message.

@@ -18,7 +18,7 @@ from langgraph.checkpoint.memory import MemorySaver
 from langchain_groq import ChatGroq
 
 from tools.visit_web import visit_web
-from tools.query_database import nl2sql_query, show_database_schema, list_tables, describe_table, get_table_row_count
+from tools.db_tools import nl2sql_query, show_database_schema, list_tables, describe_table, get_table_row_count
 from tools.excel_logger import log_interaction
 
 # Try to import Gmail tools, but continue if they fail

@@ -2,8 +2,11 @@ from langchain_core.tools import tool
 import requests
 import re
 from markdownify import markdownify
+from .llm_cache import cached_tool
+
 
 @tool
+@cached_tool(ttl_seconds=60 * 60, cache_type="visit_web", write_to_query_store=True)
 def visit_web(url: str) -> str:
     """
     Use this tool to visit a web page and extract its text content in markdown format.
@@ -46,5 +49,3 @@ def visit_web(url: str) -> str:
     except requests.exceptions.RequestException as e:
         print(f"[visit_web] RequestException for url: {url}, error: {str(e)}")
         return f"Error visiting {url}: {str(e)}"
-
-#print(visit_web.invoke("https://www.facebook.com/"))
