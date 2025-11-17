@@ -1,7 +1,9 @@
-import sqlite3
+"""Simple SQLite-backed store for persisting tool query payloads."""
+
 import os
+import sqlite3
 import time
-from typing import Optional, Any, Dict
+from typing import Optional
 
 DB_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'data')
 os.makedirs(DB_DIR, exist_ok=True)
@@ -16,13 +18,16 @@ class QueryStore:
     """
 
     def __init__(self, db_path: Optional[str] = None):
+        """Create a store pointing at *db_path* (defaults to the project DB)."""
         self.db_path = db_path or QUERY_DB_PATH
         self._init_db()
 
     def _conn(self):
+        """Return a new SQLite connection to the configured database."""
         return sqlite3.connect(self.db_path)
 
     def _init_db(self):
+        """Ensure the required schema exists."""
         conn = self._conn()
         cur = conn.cursor()
         cur.execute(
@@ -42,6 +47,7 @@ class QueryStore:
         conn.close()
 
     def set(self, tool: str, key: str, payload: bytes, ttl_seconds: Optional[int] = None):
+        """Persist *payload* for a tool/key pair with an optional expiry."""
         now = int(time.time())
         expires = int(now + ttl_seconds) if ttl_seconds else None
         conn = self._conn()
@@ -54,6 +60,7 @@ class QueryStore:
         conn.close()
 
     def get(self, tool: str, key: str) -> Optional[bytes]:
+        """Return the newest payload for *tool* and *key* if not expired."""
         now = int(time.time())
         conn = self._conn()
         cur = conn.cursor()
@@ -68,6 +75,7 @@ class QueryStore:
         return payload
 
     def clear(self):
+        """Remove all stored query rows."""
         conn = self._conn()
         cur = conn.cursor()
         cur.execute("DELETE FROM queries;")

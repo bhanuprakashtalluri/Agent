@@ -1,3 +1,10 @@
+"""Persistent SQLite-backed cache used throughout the agent.
+
+The cache stores values under a ``(type, key)`` composite primary key and
+supports optional expiry, schema migrations, and basic pruning. Values are
+serialized with :mod:`msgpack` when available and fall back to pickled bytes.
+"""
+
 from __future__ import annotations
 
 import os
@@ -15,7 +22,10 @@ except Exception:
 
 
 class CacheManager:
+    """Thread-safe key/value cache with optional TTL support."""
+
     def __init__(self, db_path: str = "cache/cache.db") -> None:
+        """Create a cache pointing at *db_path* and initialize the schema."""
         self.db_path = db_path
         # ensure directory exists
         os.makedirs(os.path.dirname(self.db_path) or ".", exist_ok=True)
@@ -23,6 +33,7 @@ class CacheManager:
         self._init_db()
 
     def _init_db(self) -> None:
+        """Create required tables and migrate older schemas when possible."""
         with sqlite3.connect(self.db_path) as conn:
             c = conn.cursor()
             # Create table if missing (best-effort)
@@ -58,7 +69,18 @@ class CacheManager:
                 pass
 
     def set(self, cache_type: str, key: str, value: Any, ttl_seconds: Optional[int] = None) -> None:
-        """Store a value with optional TTL (seconds)."""
+        """Store *value* under ``(cache_type, key)`` with an optional TTL.
+
+        Args:
+            cache_type: Namespace for the cached entry (e.g., ``"tool"``).
+            key: Unique key within the namespace.
+            value: Serializable value to persist. Exceptions are ignored for
+                safety so that failures are not cached.
+            ttl_seconds: Optional time-to-live in seconds.
+        """
+        # Never cache exception objects — treat them as non-cacheable results.
+        if isinstance(value, BaseException):
+            return
         now = int(time.time())
         expires_at = (now + int(ttl_seconds)) if ttl_seconds is not None else None
         with self._lock, sqlite3.connect(self.db_path) as conn:
@@ -107,7 +129,7 @@ class CacheManager:
             conn.commit()
 
     def get(self, cache_type: str, key: str) -> Optional[Any]:
-        """Return value if present and not expired, else None."""
+        """Return the cached value when present and not expired."""
         now = int(time.time())
         with self._lock, sqlite3.connect(self.db_path) as conn:
             c = conn.cursor()
@@ -147,12 +169,31 @@ class CacheManager:
             except Exception:
                 return None
 
-    def get_or_set(self, cache_type: str, key: str, provider: Callable[[], Any], ttl_seconds: Optional[int] = None) -> Any:
-        """Return cached value or compute via provider and cache result."""
+    def get_or_set(
+        self,
+        cache_type: str,
+        key: str,
+        provider: Callable[[], Any],
+        ttl_seconds: Optional[int] = None,
+    ) -> Any:
+        """Return cached value or compute via *provider* and store the result.
+
+        Args:
+            cache_type: Namespace for the cached entry.
+            key: Unique key within the namespace.
+            provider: Callable returning the value when the cache misses.
+            ttl_seconds: Optional TTL for the stored entry.
+
+        Returns:
+            Cached value or freshly computed value from *provider*.
+        """
         val = self.get(cache_type, key)
         if val is not None:
             return val
         value = provider()
+        # If provider returned an exception object, do not cache it; return directly.
+        if isinstance(value, BaseException):
+            return value
         try:
             self.set(cache_type, key, value, ttl_seconds=ttl_seconds)
         except Exception:
@@ -161,12 +202,14 @@ class CacheManager:
         return value
 
     def delete(self, cache_type: str, key: str) -> None:
+        """Remove a specific cache entry if it exists."""
         with self._lock, sqlite3.connect(self.db_path) as conn:
             c = conn.cursor()
             c.execute("DELETE FROM cache WHERE type=? AND key=?", (cache_type, key))
             conn.commit()
 
     def clear(self, cache_type: Optional[str] = None) -> None:
+        """Remove all entries or all entries for *cache_type*."""
         with self._lock, sqlite3.connect(self.db_path) as conn:
             c = conn.cursor()
             if cache_type:
@@ -176,6 +219,7 @@ class CacheManager:
             conn.commit()
 
     def keys(self, cache_type: Optional[str] = None) -> List[str]:
+        """Return stored keys optionally filtered by *cache_type*."""
         with self._lock, sqlite3.connect(self.db_path) as conn:
             c = conn.cursor()
             if cache_type:
@@ -186,10 +230,12 @@ class CacheManager:
             return [r[0] for r in rows]
 
     def prune(self, remove_all_expired: bool = True, keep_most_recent: Optional[int] = None) -> None:
-        """Prune expired entries and optionally keep only the most recent N entries.
+        """Remove expired entries and optionally trim to *keep_most_recent*.
 
-        - remove_all_expired: deletes entries whose expires_at <= now
-        - keep_most_recent: keeps only this many entries (by last_accessed) across all types
+        Args:
+            remove_all_expired: When ``True`` delete everything past ``expires_at``.
+            keep_most_recent: If provided, keep only the most recently accessed
+                ``N`` entries across all cache types.
         """
         now = int(time.time())
         with self._lock, sqlite3.connect(self.db_path) as conn:
@@ -211,5 +257,4 @@ class CacheManager:
             conn.commit()
 
 
-__all__ = ["CacheManager"]
 __all__ = ["CacheManager"]

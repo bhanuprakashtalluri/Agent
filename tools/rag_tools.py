@@ -3,20 +3,22 @@ RAG Tools for LangChain Agent
 Provides document search and retrieval capabilities
 """
 
+from pathlib import Path
+from typing import Dict, List
+
+import pandas as pd
 from langchain.tools import tool
-from typing import Optional
 
 from RAG.vector_store import VectorStoreManager
-from pathlib import Path
-import pandas as pd
 from .llm_cache import cached_tool
 
 
 # Initialize vector store (singleton pattern)
 _vector_store = None
 
+
 def get_vector_store() -> VectorStoreManager:
-    """Get or create vector store instance"""
+    """Return the singleton :class:`VectorStoreManager` instance."""
     print("\n[get_vector_store] Called")
     global _vector_store
     if _vector_store is None:
@@ -30,28 +32,25 @@ def get_vector_store() -> VectorStoreManager:
 @tool
 @cached_tool(ttl_seconds=60 * 5, cache_type="rag_search", write_to_query_store=True)
 def search_documents(query: str, num_results: int = 3) -> str:
-    """
-    Search through uploaded documents using semantic similarity.
-    Use this tool when the user asks about information that might be in their documents,
-    files, PDFs, Excel sheets, or any uploaded content.
-    
+    """Search uploaded documents for content relevant to *query*.
+
     Args:
-        query: The search query to find relevant information
-        num_results: Number of results to return (default: 3)
-        
+        query: Free-form text describing the desired information.
+        num_results: Number of snippets to return.
+
     Returns:
-        String with relevant document excerpts and sources
+        Markdown string summarizing the best matches or an error message.
     """
     print(f"\n[search_documents] Input: query={query}, num_results={num_results}")
     try:
         vs = get_vector_store()
         print(f"[search_documents] Vector store: {vs}")
-            
-            # Get stats first to check if documents exist
+
+        # Get stats first to check if documents exist
         stats = vs.get_stats()
         doc_count = stats.get('document_count', 0)
         print(f"[search_documents] Stats: {stats}")
-            
+
         if doc_count == 0:
             print("[search_documents] No documents uploaded.")
             return (
@@ -96,13 +95,7 @@ def search_documents(query: str, num_results: int = 3) -> str:
 @tool
 @cached_tool(ttl_seconds=60 * 30, cache_type="rag_list_sources", write_to_query_store=True)
 def list_document_sources() -> str:
-    """
-    List all documents that have been uploaded to the system.
-    Use this to see what documents are available for searching.
-    
-    Returns:
-        String listing all document sources
-    """
+    """Return a list of uploaded documents and their types."""
     try:
         vs = get_vector_store()
         
@@ -118,7 +111,7 @@ def list_document_sources() -> str:
         try:
             results = vs.similarity_search("", k=100)  # Get up to 100 chunks
             
-            sources = {}
+            sources: Dict[str, str] = {}
             for doc in results:
                 source = doc.metadata.get('source', 'Unknown')
                 doc_type = doc.metadata.get('type', 'Unknown')
@@ -144,24 +137,17 @@ def list_document_sources() -> str:
 @tool
 @cached_tool(ttl_seconds=60 * 5, cache_type="rag_stats", write_to_query_store=True)
 def get_document_stats() -> str:
-    """
-    Get statistics about the document database.
-    Use this to check how many documents are stored.
-    
-    Returns:
-        String with database statistics
-    """
+    """Return aggregate statistics for the document vector store."""
     try:
         vs = get_vector_store()
         stats = vs.get_stats()
-        
-        output = "📊 Document Database Statistics:\n\n"
+        output = "Document Database Statistics:\n\n"
         output += f"Collection: {stats.get('collection_name', 'Unknown')}\n"
         output += f"Total chunks: {stats.get('document_count', 0)}\n"
         output += f"Storage: {stats.get('persist_directory', 'Unknown')}\n"
         
         if 'error' in stats:
-            output += f"\n⚠ Error: {stats['error']}"
+            output += f"\nError: {stats['error']}"
         
         return output
     
@@ -176,18 +162,14 @@ rag_tools = [search_documents, list_document_sources, get_document_stats]
 @tool
 @cached_tool(ttl_seconds=60 * 5, cache_type="read_csv", write_to_query_store=True)
 def read_csv(filename: str, preview_rows: int = 20) -> str:
-    """
-    Read a CSV file from the project's allowed directories and return a preview.
-
-    The function only reads files under `RAG/documents/uploads` or `data` to avoid
-    exposing arbitrary filesystem access.
+    """Return a tabular preview of a CSV within the allowed directories.
 
     Args:
-        filename: Name of the CSV file (e.g. 'address_details.csv')
-        preview_rows: Number of rows to include in the preview
+        filename: Basename of the CSV relative to the allowed folders.
+        preview_rows: Maximum number of rows to include in the preview.
 
     Returns:
-        A string containing a markdown table preview of the CSV or an error message.
+        Markdown table of the preview or an explanatory error message.
     """
     try:
         allowed_dirs = [Path("RAG/documents/uploads"), Path("data")]

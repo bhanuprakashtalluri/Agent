@@ -1,21 +1,25 @@
-from langchain_core.tools import tool
-import requests
+"""Tool for retrieving HTML pages and converting them to Markdown."""
+
 import re
+
+import requests
+from langchain_core.tools import tool
 from markdownify import markdownify
+
 from .llm_cache import cached_tool
 
 
 @tool
 @cached_tool(ttl_seconds=60 * 60, cache_type="visit_web", write_to_query_store=True)
 def visit_web(url: str) -> str:
-    """
-    Use this tool to visit a web page and extract its text content in markdown format.
-    Best used after finding relevant URLs through search.
+    """Fetch *url*, convert the HTML to Markdown, and return the content.
 
-    Arguments:
-        url: The URL of the web page to visit.
+    Args:
+        url: Public HTTP or HTTPS URL to download.
+
     Returns:
-        Markdown content or error message.
+        Markdown string describing the page or an error message if fetching
+        fails.
     """
     print(f"\n[visit_web] Input: url={url}")
     

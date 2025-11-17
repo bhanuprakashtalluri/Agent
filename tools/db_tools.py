@@ -1,11 +1,54 @@
-import sqlite3
+"""Higher-level utilities for LLM powered database interactions."""
+
 import os
+import sqlite3
+import time
+from typing import Dict, List
+
 from langchain_ollama import ChatOllama
+
 from tools.cache_manager import CacheManager
-from tools.llm_cache import cached_invoke, cached_sql_query, DEFAULT_CACHE
+from tools.llm_cache import DEFAULT_CACHE, cached_invoke, cached_sql_query
 from tools.query_store import DEFAULT_QUERY_STORE
 
 DB_PATH = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'data', 'customers.db')
+
+# Optional breakpoint configuration. Set DB_DEBUG_BREAKPOINTS="stage1,stage2" or "*" to trigger.
+# Optional timing logging. Set DB_DEBUG_TIMING to any truthy value to log per-stage timings.
+_DEBUG_BREAKPOINTS = {
+    item.strip()
+    for item in os.getenv("DB_DEBUG_BREAKPOINTS", "").split(",")
+    if item.strip()
+}
+_ENABLE_TIMING = os.getenv("DB_DEBUG_TIMING", "").strip().lower() in {"1", "true", "yes", "on", "*"}
+_TIMELINE = []
+
+
+def _record_time(stage: str) -> None:
+    """Record a timestamp for *stage* when timeline logging is enabled."""
+    if not _ENABLE_TIMING:
+        return
+    now = time.perf_counter()
+    if _TIMELINE:
+        prev = _TIMELINE[-1][1]
+        start = _TIMELINE[0][1]
+        delta = now - prev
+        total = now - start
+    else:
+        delta = 0.0
+        total = 0.0
+    _TIMELINE.append((stage, now))
+    print(f"[db_tools timing] stage='{stage}' delta={delta:.4f}s total={total:.4f}s")
+
+
+def _debug_break(stage: str) -> None:
+    """Trigger the debugger for *stage* when configured via environment."""
+    _record_time(stage)
+    if not _DEBUG_BREAKPOINTS:
+        return
+    if stage in _DEBUG_BREAKPOINTS or "*" in _DEBUG_BREAKPOINTS:
+        print(f"[db_tools debug] breakpoint triggered at stage='{stage}'")
+        breakpoint()
 
 # System prompt for NL2SQL
 SYSTEM_PROMPT = """
@@ -43,13 +86,14 @@ IMPORTANT: Return only the query results, not the SQL query itself. Do not inclu
 cache = CacheManager()
 
 
-def split_to_subqueries_with_llm(user_question: str) -> list:
-    """
-    Use ChatOllama (Qwen3:4b) to break down a multi-part user question into distinct sub-queries.
+def split_to_subqueries_with_llm(user_question: str) -> List[str]:
+    """Break a multi-part question into focused sub-queries using an LLM.
+
     Args:
-        user_question: The user's multi-part question in English
+        user_question: Original user prompt in natural language.
+
     Returns:
-        List of sub-queries
+        Ordered list of sub-queries derived from the model response.
     """
     print(f"\n[split_to_subqueries_with_llm] Input: {user_question}")
     split_prompt = (
@@ -57,7 +101,17 @@ def split_to_subqueries_with_llm(user_question: str) -> list:
         "Each sub-query should be answerable by a single SQL SELECT statement. "
         "Return only the sub-queries as a numbered list, no explanations.\n\nUser question: " + user_question
     )
-    text = cached_invoke(model, split_prompt, cache, cache_type="llm_split", ttl_seconds=300, model_name=str(getattr(model, 'model', 'qwen3')), cache=cache, query_store=DEFAULT_QUERY_STORE)
+    _debug_break("split:before_llm")
+    text = cached_invoke(
+        model,
+        split_prompt,
+        cache=cache,
+        cache_type="llm_split",
+        ttl_seconds=300,
+        model_name=str(getattr(model, "model", "qwen3")),
+        query_store=DEFAULT_QUERY_STORE,
+    )
+    _debug_break("split:after_llm")
     print(f"[split_to_subqueries_with_llm] Raw LLM response: {text}")
     # Parse numbered list into sub-queries
     import re
@@ -69,18 +123,22 @@ def split_to_subqueries_with_llm(user_question: str) -> list:
     return sub_queries
 
 def handle_multi_query_with_llm(user_question: str) -> str:
-    """
-    Use LLM to split multi-part question, then run nl2sql_query for each sub-query and aggregate results.
+    """Run each sub-query produced from *user_question* and aggregate output.
+
     Args:
-        user_question: The user's multi-part question in English
+        user_question: Multi-step database question in natural language.
+
     Returns:
-        Aggregated results from all sub-queries
+        Aggregated string containing every sub-query and its answer.
     """
     print(f"\n[handle_multi_query_with_llm] Input: {user_question}")
+    _debug_break("multi:start")
     sub_queries = split_to_subqueries_with_llm(user_question)
     results = []
     for idx, q in enumerate(sub_queries, 1):
+        _debug_break(f"multi:before_subquery_{idx}")
         result = nl2sql_query(q)
+        _debug_break(f"multi:after_subquery_{idx}")
         print(f"[handle_multi_query_with_llm] Sub-query Q{idx}: {q}\nResult:\n{result}")
         results.append(f"Q{idx}: {q}\n{result}\n")
     output = '\n'.join(results)
@@ -95,17 +153,46 @@ model = ChatOllama(
         verbose=False,
 )
 
-def nl2sql_query(user_question: str) -> str:
-    """
-    Translate an English question to SQL using qwen3:4b, execute it, and return results.
+def nl2sql_query(user_question) -> str:
+    """Translate an English question to SQL, execute it, and format results.
+
     Args:
-        user_question: The user's question in English
+        user_question: Either a plain string or dict containing the question.
+
     Returns:
-        Query results or error message
+        Formatted query result or an explanatory error string.
     """
-    prompt = SYSTEM_PROMPT + f"\nUser question: {user_question}\nSQL:"
-    sql_str = cached_invoke(model, prompt, cache, cache_type="nl2sql",
-                            ttl_seconds=60, model_name=str(getattr(model, 'model', 'qwen3')), cache=cache, query_store=DEFAULT_QUERY_STORE)
+    _debug_break("nl2sql:start")
+    # Normalize input: allow being called as a function-tool where the model
+    # may pass a JSON object like {"user_question": "..."}.
+    if isinstance(user_question, dict):
+        # Common keys the model might send
+        user_question = user_question.get("user_question") or user_question.get("query") or user_question.get("question") or ""
+
+    # Ensure we have a string
+    if user_question is None:
+        user_question = ""
+    q_str = str(user_question).strip()
+    if q_str[:10].lower().startswith(("select", "with", "show", "pragma", "describe", "desc")):
+        sql_str = q_str
+    else:
+        prompt = SYSTEM_PROMPT + f"\nUser question: {user_question}\nSQL:"
+        try:
+            sql_str = cached_invoke(
+                model,
+                prompt,
+                cache=cache,
+                cache_type="nl2sql",
+                ttl_seconds=60,
+                model_name=str(getattr(model, 'model', 'qwen3')),
+                query_store=DEFAULT_QUERY_STORE,
+            )
+        except Exception as e:
+            # Surface the underlying LLM/tool failure instead of crashing the tool call.
+            print("\n--- LLM Invocation Error ---")
+            print(str(e))
+            return f"Error generating SQL: {str(e)}"
+    _debug_break("nl2sql:after_llm")
     # Print raw LLM response (string)
     print("\n--- LLM Raw Response ---")
     print(sql_str)
@@ -117,6 +204,7 @@ def nl2sql_query(user_question: str) -> str:
         print(sql_str)
         return f"Error: Only SELECT queries are allowed. Model generated: {sql_str}"
     try:
+        _debug_break("nl2sql:before_sql")
         def executor():
             conn = sqlite3.connect(f"file:{DB_PATH}?mode=ro", uri=True)
             cursor = conn.cursor()
@@ -125,37 +213,51 @@ def nl2sql_query(user_question: str) -> str:
             cols = [desc[0] for desc in cursor.description]
             conn.close()
             return cols, rows
-
-        columns, results = cached_sql_query(sql_str, executor, cache, cache_type="sql_results", ttl_seconds=30, query_store=DEFAULT_QUERY_STORE)
+        columns, results = cached_sql_query(
+            sql_str,
+            executor,
+            cache=cache,
+            cache_type="sql_results",
+            ttl_seconds=30,
+            query_store=DEFAULT_QUERY_STORE,
+        )
+        _debug_break("nl2sql:after_sql")
         print("\n--- Raw DB Results ---")
         print("Columns:", columns)
         print("Rows:", results)
         # Format results
         if not results:
+            _debug_break("nl2sql:no_results")
             return "No results found."
+
         # Post-process: check if searched name is an exact match
         import re
+
         searched_name = None
         name_match = re.search(r"show (?:all )?orders of ([\w ]+)", user_question.lower())
         if name_match:
             searched_name = name_match.group(1).strip().title()
+
         # Find all customer names in results
         name_idx = None
         for idx, col in enumerate(columns):
             if col.lower() == "name":
                 name_idx = idx
                 break
+
         found_names = set()
         if name_idx is not None:
             for row in results:
                 found_names.add(str(row[name_idx]))
+
         # If searched_name is not in found_names, label as similar matches
         output = []
         if searched_name and name_idx is not None and searched_name not in found_names:
             output.append(f'No exact match found for "{searched_name}". Showing similar matches:')
-            # Group by customer name
+
             from collections import defaultdict
-            grouped = defaultdict(list)
+
+            grouped: Dict[str, List[tuple]] = defaultdict(list)
             for row in results:
                 grouped[row[name_idx]].append(row)
             for cname, rows in grouped.items():
@@ -167,6 +269,7 @@ def nl2sql_query(user_question: str) -> str:
             output.append(" | ".join(columns))
             for row in results:
                 output.append(" | ".join(str(item) for item in row))
+        _debug_break("nl2sql:before_return")
         return "\n".join(output)
     except Exception as e:
         print("\n--- DB Error ---")
@@ -175,11 +278,7 @@ def nl2sql_query(user_question: str) -> str:
     
 # List all table names in the database
 def list_tables() -> str:
-    """
-    List all table names in the customer database.
-    Returns:
-        A string with all table names, one per line.
-    """
+    """Return all table names in the customer database, one per line."""
     print("\n[list_tables] Called")
     try:
         conn = sqlite3.connect(f"file:{DB_PATH}?mode=ro", uri=True)
@@ -195,13 +294,7 @@ def list_tables() -> str:
 
 # Describe columns and types for a specific table
 def describe_table(table_name: str) -> str:
-    """
-    Show columns and types for a specific table.
-    Args:
-        table_name: Name of the table to describe.
-    Returns:
-        A string listing columns and types, or error message.
-    """
+    """Return column names and data types for *table_name*."""
     print(f"\n[describe_table] Input: {table_name}")
     try:
         conn = sqlite3.connect(f"file:{DB_PATH}?mode=ro", uri=True)
@@ -220,13 +313,7 @@ def describe_table(table_name: str) -> str:
 
 # Return the number of rows in a table
 def get_table_row_count(table_name: str) -> str:
-    """
-    Return the number of rows in a table.
-    Args:
-        table_name: Name of the table.
-    Returns:
-        String with row count or error message.
-    """
+    """Return a formatted message describing the row count for *table_name*."""
     print(f"\n[get_table_row_count] Input: {table_name}")
     try:
         conn = sqlite3.connect(f"file:{DB_PATH}?mode=ro", uri=True)
@@ -241,11 +328,7 @@ def get_table_row_count(table_name: str) -> str:
         return f"Error getting row count: {str(e)}"
 # Tool to show database schema
 def show_database_schema() -> str:
-    """
-    Retrieve and display the schema of the customer database (tables and columns).
-    Returns:
-        A formatted string showing all tables and their columns.
-    """
+    """Return a formatted schema description for the entire database."""
     print("\n[show_database_schema] Called")
     try:
         conn = sqlite3.connect(f"file:{DB_PATH}?mode=ro", uri=True)

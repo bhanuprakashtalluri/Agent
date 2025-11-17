@@ -17,6 +17,33 @@ from .cache_manager import CacheManager
 from .query_store import DEFAULT_QUERY_STORE, QueryStore
 from .in_memory_cache import DEFAULT_IN_MEMORY_CACHE
 from .embeddings_cache import DEFAULT_EMBEDDINGS_CACHE
+from .token_utils import estimate_tokens, truncate_to_tokens
+
+
+# Global defaults per model provider: (max_input_tokens, max_output_tokens)
+DEFAULT_MODEL_TOKEN_LIMITS = {
+    "ChatOllama": (1000, 250),
+    "ChatGroq": (2000, 500),
+}
+
+
+def _detect_model_provider(model: Any, model_name: Optional[str] = None) -> Optional[str]:
+    """Try to infer the model provider key (e.g., 'ollama' or 'chatgroq').
+
+    This uses class name and model_name heuristics and is intentionally
+    permissive to handle different wrappers.
+    """
+    try:
+        cls_name = getattr(model, "__class__", type(model)).__name__ or ""
+        mn = (model_name or getattr(model, "model", "") or "").lower()
+        cls = cls_name.lower()
+        if "ollama" in cls or "ollama" in mn or "qwen" in mn:
+            return "ChatOllama"
+        if "groq" in cls or "groq" in mn or "chatgroq" in mn:
+            return "ChatGroq"
+    except Exception:
+        pass
+    return None
 
 
 # Shared cache instance for the tools module
@@ -36,15 +63,16 @@ def _make_key(parts: list) -> str:
 
 
 def cached_tool(ttl_seconds: Optional[int] = None, cache_type: str = "tool", write_to_query_store: bool = False):
-    """Decorator to cache the return value of a tool function.
+    """Cache the result of a tool function.
 
-    Usage:
-        @cached_tool(ttl_seconds=300, cache_type='visit_web')
-        def visit_web(url: str) -> str: ...
+    Args:
+        ttl_seconds: Expiry for the cached entry. ``None`` keeps it forever.
+        cache_type: Namespace prefix for stored keys.
+        write_to_query_store: Persist successful results to the query store.
 
-    The decorator constructs a key as: {func.__name__} + args + kwargs.
-    It uses DEFAULT_CACHE by default but allows callers to pass a different
-    CacheManager instance via keyword arg `cache` when invoking the function.
+    Returns:
+        Decorator that can be applied to any callable with serializable
+        arguments.
     """
 
     def decorator(func: Callable):
@@ -116,13 +144,50 @@ def cached_invoke(
     cache_type: str = "llm_response",
     ttl_seconds: Optional[int] = 3600,
     model_name: Optional[str] = None,
+    query_store: Optional[QueryStore] = None,
+    max_input_tokens: Optional[int] = None,
+    max_output_tokens: Optional[int] = None,
+    allow_function_calls: bool = False,
 ) -> str:
-    """Invoke an LLM model with caching. Returns the text content.
+    """Invoke an LLM model with caching and optional token constraints.
 
-    If `cache` is None the DEFAULT_CACHE is used.
+    Args:
+        model: Chat model exposing an ``invoke`` method.
+        prompt: Prompt text to send to the model.
+        cache: Cache manager instance to reuse.
+        cache_type: Namespace for stored responses.
+        ttl_seconds: Expiry for cached entries.
+        model_name: Optional descriptive name used for keying and heuristics.
+        query_store: Optional secondary persistence for analytics.
+        max_input_tokens: Soft limit for prompt length.
+        max_output_tokens: Soft limit for response length.
+        allow_function_calls: If ``False`` instructs the model to avoid tools.
+
+    Returns:
+        Text content produced by the model, truncated if necessary.
     """
     if cache is None:
         cache = DEFAULT_CACHE
+
+    # If limits not provided, apply provider-specific defaults
+    if max_input_tokens is None or max_output_tokens is None:
+        prov = _detect_model_provider(model, model_name)
+        if prov and prov in DEFAULT_MODEL_TOKEN_LIMITS:
+            inp_def, out_def = DEFAULT_MODEL_TOKEN_LIMITS[prov]
+            if max_input_tokens is None:
+                max_input_tokens = inp_def
+            if max_output_tokens is None:
+                max_output_tokens = out_def
+
+    # If function calls are not allowed, prepend an explicit instruction to the prompt
+    if not allow_function_calls:
+        no_call_instruction = "IMPORTANT: Do not call any external functions or tools. Return the answer directly as plain text."
+        if no_call_instruction not in prompt:
+            prompt = no_call_instruction + "\n\n" + prompt
+
+    # Optionally truncate the prompt to fit input token budget
+    if max_input_tokens is not None:
+        prompt = truncate_to_tokens(prompt, max_input_tokens, model_name)
 
     key = _make_key([model_name or getattr(model, "model", "default"), prompt])
 
@@ -132,14 +197,60 @@ def cached_invoke(
         return hot
 
     def provider():
-        resp = model.invoke(prompt)
+        try:
+            resp = model.invoke(prompt)
+        except Exception as e:
+            # If the model failed due to attempted function calling (tool_use_failed / failed_generation),
+            # retry with an explicit instruction to avoid function calls. If retry fails, re-raise.
+            se = str(e)
+            if 'failed_generation' in se or 'tool_use_failed' in se or 'Failed to call a function' in se:
+                try:
+                    fallback_prompt = (
+                        prompt
+                        + "\n\nIMPORTANT: Do not call any external functions or tools. Return the answer directly as plain text."
+                    )
+                    resp = model.invoke(fallback_prompt)
+                except Exception:
+                    # re-raise original exception to avoid caching an error string
+                    raise
+            else:
+                # Not a function-call failure; re-raise
+                raise
+
         if hasattr(resp, "content"):
-            return resp.content
-        return str(resp)
+            content = resp.content
+        else:
+            # If the response is some other object (dict/string), try to extract text
+            try:
+                # If it's a dict-like with 'content' or 'text'
+                if isinstance(resp, dict):
+                    content = resp.get('content') or resp.get('text') or str(resp)
+                else:
+                    content = str(resp)
+            except Exception:
+                content = str(resp)
+        # If the model produced more tokens than allowed, truncate the output
+        if max_output_tokens is not None:
+            est = estimate_tokens(content, model_name)
+            if est > max_output_tokens:
+                try:
+                    content = truncate_to_tokens(content, max_output_tokens, model_name)
+                except Exception:
+                    # Best-effort: fallback to slice
+                    content = content[: max_output_tokens * 4]
+        return content
 
     result = cache.get_or_set(cache_type, key, provider, ttl_seconds=ttl_seconds)
     try:
         DEFAULT_IN_MEMORY_CACHE.set(key, result, ttl_seconds)
+    except Exception:
+        pass
+    # write to query_store if provided
+    try:
+        qs = query_store
+        if qs is not None:
+            payload = json.dumps({"model": model_name or getattr(model, "model", "default"), "prompt": prompt, "key": key, "result": result}).encode("utf-8")
+            qs.set(cache_type, key, payload, ttl_seconds=ttl_seconds)
     except Exception:
         pass
     return result
@@ -151,10 +262,20 @@ def cached_sql_query(
     cache: Optional[CacheManager] = None,
     cache_type: str = "sql",
     ttl_seconds: Optional[int] = 300,
+    query_store: Optional[QueryStore] = None,
 ) -> Tuple[list, list]:
-    """Cache results of a SQL executor. Executor should return (columns, rows).
+    """Cache results of an executor that runs a SQL statement.
 
-    We key by the SQL string. If `cache` is None the DEFAULT_CACHE is used.
+    Args:
+        sql: SQL string used as the cache key.
+        executor: Callable returning ``(columns, rows)`` when executed.
+        cache: Cache manager instance to reuse.
+        cache_type: Namespace for the stored payload.
+        ttl_seconds: Expiry for cached results.
+        query_store: Optional secondary persistence for analytics.
+
+    Returns:
+        Tuple of columns and rows, aligned with the executor's output.
     """
     if cache is None:
         cache = DEFAULT_CACHE
@@ -176,6 +297,14 @@ def cached_sql_query(
             DEFAULT_IN_MEMORY_CACHE.set(key, data, ttl_seconds)
         except Exception:
             pass
+    # write to query_store if provided
+    try:
+        qs = query_store
+        if qs is not None:
+            payload = json.dumps({"sql": sql, "key": key, "result": data}).encode("utf-8")
+            qs.set(cache_type, key, payload, ttl_seconds=ttl_seconds)
+    except Exception:
+        pass
     # data should be a dict with cols and rows
     if isinstance(data, dict) and "cols" in data and "rows" in data:
         return data["cols"], data["rows"]
@@ -184,12 +313,16 @@ def cached_sql_query(
 
 
 def get_or_set_embedding(content: str, model_name: str, provider: callable, config: Optional[dict] = None):
-    """Return embedding vector either from embeddings cache or by calling provider().
+    """Return an embedding vector from cache or compute a fresh copy.
 
-    - content: the text to embed
-    - model_name: identifier for the embedding model
-    - provider: callable that returns the embedding vector
-    - config: optional embedding config used in key
+    Args:
+        content: Text that was embedded.
+        model_name: Identifier of the embedding model.
+        provider: Callable invoked when the cache misses.
+        config: Optional serializer configuration that influences the key.
+
+    Returns:
+        Embedding vector produced by *provider* or loaded from cache.
     """
     # try hot in-memory first
     key = _make_key([model_name, content, json.dumps(config or {}, sort_keys=True)])

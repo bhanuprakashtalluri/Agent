@@ -1,11 +1,15 @@
-from langchain.tools import tool
+"""Utilities for interacting with Gmail through the Google API."""
+
+import base64
+import os
+from email.mime.text import MIMEText
+
 from google.auth.transport.requests import Request
 from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import InstalledAppFlow
 from googleapiclient.discovery import build
-import os
-import base64
-from email.mime.text import MIMEText
+from langchain.tools import tool
+
 from .llm_cache import cached_tool
 
 
@@ -18,7 +22,7 @@ TOKEN_PATH = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'config', 
 
 
 def get_gmail_service():
-    """Authenticate and return Gmail API service"""
+    """Authenticate with Gmail and return the service plus an optional error."""
     print("\n[get_gmail_service] Called")
     creds = None
     
@@ -73,13 +77,14 @@ def get_my_email() -> str:
 @tool
 @cached_tool(ttl_seconds=60 * 5, cache_type="gmail_search", write_to_query_store=True)
 def search_gmail(query: str, max_results: int = 10) -> str:
-    """
-    Search Gmail for emails matching the query string.
+    """Search Gmail messages using the native query syntax.
+
     Args:
-        query: Gmail search string
-        max_results: Maximum number of emails to return (default: 10)
+        query: Gmail-compatible search expression.
+        max_results: Maximum messages to retrieve.
+
     Returns:
-        List of matching emails with basic metadata and snippets
+        Summary of matches with basic metadata and snippets.
     """
     print(f"\n[search_gmail] Input: query={query}, max_results={max_results}")
     try:
@@ -128,14 +133,13 @@ def search_gmail(query: str, max_results: int = 10) -> str:
 @tool
 @cached_tool(ttl_seconds=60 * 5, cache_type="gmail_read", write_to_query_store=True)
 def read_gmail(email_id: str) -> str:
-    """
-    Read the full content of a specific Gmail message.
-    
+    """Return the full content of a Gmail message identified by *email_id*.
+
     Args:
-        email_id: The ID of the email to read (obtained from search_gmail)
-    
+        email_id: Identifier obtained via :func:`search_gmail`.
+
     Returns:
-        Full email content including body
+        Plain-text representation of the message body with key headers.
     """
     try:
         service, error = get_gmail_service()
@@ -179,22 +183,15 @@ Date: {date}
 
 @tool
 def send_gmail(to: str, subject: str, body: str) -> str:
-    """
-    Send an email via Gmail. IMPORTANT: Always ask the user for the recipient's email address if not provided.
-    Never use placeholder emails like 'your_email@example.com' or 'user@example.com'.
-    
+    """Send an email via Gmail after validating the required fields.
+
     Args:
-        to: Recipient's actual email address (MUST be a real email, not a placeholder)
-        subject: Clear and descriptive email subject (REQUIRED - never leave empty)
-        body: The complete email body/content (REQUIRED - must be clear and coherent)
-    
+        to: Recipient email address supplied by the user.
+        subject: Subject line to use for the outgoing message.
+        body: Plain-text email body.
+
     Returns:
-        Confirmation message with details of the sent email
-    
-    Example usage:
-        to="john.doe@company.com"
-        subject="Meeting Reminder for Tomorrow"
-        body="Hi John,\n\nThis is a reminder about our meeting tomorrow at 2 PM.\n\nBest regards"
+        Success confirmation or a descriptive error string.
     """
     try:
         # Validate inputs

@@ -1,6 +1,11 @@
-import sqlite3
+"""High-level helpers for natural-language to SQL interactions."""
+
 import os
+import sqlite3
+from typing import List
+
 from langchain_ollama import ChatOllama
+
 from tools.cache_manager import CacheManager
 from tools.llm_cache import cached_invoke, cached_sql_query
 
@@ -42,13 +47,14 @@ IMPORTANT: Return only the query results, not the SQL query itself. Do not inclu
 cache = CacheManager()
 
 
-def split_to_subqueries_with_llm(user_question: str) -> list:
-    """
-    Use ChatOllama (Qwen3:4b) to break down a multi-part user question into distinct sub-queries.
+def split_to_subqueries_with_llm(user_question: str) -> List[str]:
+    """Break a multi-part NL question into focused SQL sub-queries.
+
     Args:
-        user_question: The user's multi-part question in English
+        user_question: Original user request expressed in English.
+
     Returns:
-        List of sub-queries
+        List of numbered sub-queries extracted from the LLM response.
     """
     print(f"\n[split_to_subqueries_with_llm] Input: {user_question}")
     split_prompt = (
@@ -56,7 +62,14 @@ def split_to_subqueries_with_llm(user_question: str) -> list:
         "Each sub-query should be answerable by a single SQL SELECT statement. "
         "Return only the sub-queries as a numbered list, no explanations.\n\nUser question: " + user_question
     )
-    text = cached_invoke(model, split_prompt, cache, cache_type="llm_split", ttl_seconds=300, model_name=str(getattr(model, 'model', 'qwen3')))
+    text = cached_invoke(
+        model,
+        split_prompt,
+        cache=cache,
+        cache_type="llm_split",
+        ttl_seconds=300,
+        model_name=str(getattr(model, "model", "qwen3")),
+    )
     print(f"[split_to_subqueries_with_llm] Raw LLM response: {text}")
     # Parse numbered list into sub-queries
     import re
@@ -68,12 +81,13 @@ def split_to_subqueries_with_llm(user_question: str) -> list:
     return sub_queries
 
 def handle_multi_query_with_llm(user_question: str) -> str:
-    """
-    Use LLM to split multi-part question, then run nl2sql_query for each sub-query and aggregate results.
+    """Answer multi-part questions by splitting and aggregating responses.
+
     Args:
-        user_question: The user's multi-part question in English
+        user_question: Multi-part user prompt in English.
+
     Returns:
-        Aggregated results from all sub-queries
+        Aggregated string containing results for each generated sub-query.
     """
     print(f"\n[handle_multi_query_with_llm] Input: {user_question}")
     sub_queries = split_to_subqueries_with_llm(user_question)
@@ -95,12 +109,13 @@ model = ChatOllama(
 )
 
 def nl2sql_query(user_question: str) -> str:
-    """
-    Translate an English question to SQL using qwen3:4b, execute it, and return results.
+    """Translate an English question into SQL, execute it, and format results.
+
     Args:
-        user_question: The user's question in English
+        user_question: Question to answer using the customer database.
+
     Returns:
-        Query results or error message
+        Formatted rows or an error message describing why execution failed.
     """
     prompt = SYSTEM_PROMPT + f"\nUser question: {user_question}\nSQL:"
     sql_str = cached_invoke(model, prompt, cache, cache_type="nl2sql",
@@ -125,7 +140,13 @@ def nl2sql_query(user_question: str) -> str:
             conn.close()
             return cols, rows
 
-        columns, results = cached_sql_query(sql_str, executor, cache, cache_type="sql_results", ttl_seconds=30)
+        columns, results = cached_sql_query(
+            sql_str,
+            executor,
+            cache=cache,
+            cache_type="sql_results",
+            ttl_seconds=30,
+        )
         print("\n--- Raw DB Results ---")
         print("Columns:", columns)
         print("Rows:", results)
@@ -174,11 +195,7 @@ def nl2sql_query(user_question: str) -> str:
     
 # List all table names in the database
 def list_tables() -> str:
-    """
-    List all table names in the customer database.
-    Returns:
-        A string with all table names, one per line.
-    """
+    """Return all table names found in the customer database."""
     print("\n[list_tables] Called")
     try:
         conn = sqlite3.connect(f"file:{DB_PATH}?mode=ro", uri=True)
@@ -194,13 +211,7 @@ def list_tables() -> str:
 
 # Describe columns and types for a specific table
 def describe_table(table_name: str) -> str:
-    """
-    Show columns and types for a specific table.
-    Args:
-        table_name: Name of the table to describe.
-    Returns:
-        A string listing columns and types, or error message.
-    """
+    """Return column names and types for *table_name*."""
     print(f"\n[describe_table] Input: {table_name}")
     try:
         conn = sqlite3.connect(f"file:{DB_PATH}?mode=ro", uri=True)
@@ -219,13 +230,7 @@ def describe_table(table_name: str) -> str:
 
 # Return the number of rows in a table
 def get_table_row_count(table_name: str) -> str:
-    """
-    Return the number of rows in a table.
-    Args:
-        table_name: Name of the table.
-    Returns:
-        String with row count or error message.
-    """
+    """Return a human-readable row-count summary for *table_name*."""
     print(f"\n[get_table_row_count] Input: {table_name}")
     try:
         conn = sqlite3.connect(f"file:{DB_PATH}?mode=ro", uri=True)
@@ -240,11 +245,7 @@ def get_table_row_count(table_name: str) -> str:
         return f"Error getting row count: {str(e)}"
 # Tool to show database schema
 def show_database_schema() -> str:
-    """
-    Retrieve and display the schema of the customer database (tables and columns).
-    Returns:
-        A formatted string showing all tables and their columns.
-    """
+    """Return a formatted schema overview for every table in the database."""
     print("\n[show_database_schema] Called")
     try:
         conn = sqlite3.connect(f"file:{DB_PATH}?mode=ro", uri=True)
