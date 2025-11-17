@@ -2,6 +2,7 @@
 
 import os
 import sqlite3
+import os
 import time
 from typing import Dict, List
 
@@ -42,7 +43,7 @@ def _record_time(stage: str) -> None:
 
 
 def _debug_break(stage: str) -> None:
-    """Trigger the debugger for *stage* when configured via environment."""
+    """Invoke Python's debugger when the requested stage is enabled via env var."""
     _record_time(stage)
     if not _DEBUG_BREAKPOINTS:
         return
@@ -123,13 +124,12 @@ def split_to_subqueries_with_llm(user_question: str) -> List[str]:
     return sub_queries
 
 def handle_multi_query_with_llm(user_question: str) -> str:
-    """Run each sub-query produced from *user_question* and aggregate output.
-
+    """
+    Use LLM to split multi-part question, then run nl2sql_query for each sub-query and aggregate results.
     Args:
-        user_question: Multi-step database question in natural language.
-
+        user_question: The user's multi-part question in English
     Returns:
-        Aggregated string containing every sub-query and its answer.
+        Aggregated results from all sub-queries
     """
     print(f"\n[handle_multi_query_with_llm] Input: {user_question}")
     _debug_break("multi:start")
@@ -278,7 +278,11 @@ def nl2sql_query(user_question) -> str:
     
 # List all table names in the database
 def list_tables() -> str:
-    """Return all table names in the customer database, one per line."""
+    """
+    List all table names in the customer database.
+    Returns:
+        A string with all table names, one per line.
+    """
     print("\n[list_tables] Called")
     try:
         conn = sqlite3.connect(f"file:{DB_PATH}?mode=ro", uri=True)
@@ -294,7 +298,13 @@ def list_tables() -> str:
 
 # Describe columns and types for a specific table
 def describe_table(table_name: str) -> str:
-    """Return column names and data types for *table_name*."""
+    """
+    Show columns and types for a specific table.
+    Args:
+        table_name: Name of the table to describe.
+    Returns:
+        A string listing columns and types, or error message.
+    """
     print(f"\n[describe_table] Input: {table_name}")
     try:
         conn = sqlite3.connect(f"file:{DB_PATH}?mode=ro", uri=True)
@@ -313,7 +323,13 @@ def describe_table(table_name: str) -> str:
 
 # Return the number of rows in a table
 def get_table_row_count(table_name: str) -> str:
-    """Return a formatted message describing the row count for *table_name*."""
+    """
+    Return the number of rows in a table.
+    Args:
+        table_name: Name of the table.
+    Returns:
+        String with row count or error message.
+    """
     print(f"\n[get_table_row_count] Input: {table_name}")
     try:
         conn = sqlite3.connect(f"file:{DB_PATH}?mode=ro", uri=True)
@@ -328,7 +344,11 @@ def get_table_row_count(table_name: str) -> str:
         return f"Error getting row count: {str(e)}"
 # Tool to show database schema
 def show_database_schema() -> str:
-    """Return a formatted schema description for the entire database."""
+    """
+    Retrieve and display the schema of the customer database (tables and columns).
+    Returns:
+        A formatted string showing all tables and their columns.
+    """
     print("\n[show_database_schema] Called")
     try:
         conn = sqlite3.connect(f"file:{DB_PATH}?mode=ro", uri=True)

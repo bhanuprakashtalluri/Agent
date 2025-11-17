@@ -52,3 +52,7 @@ Thumbs.db
 build/
 dist/
 *.egg-info/
+
+./logs/agent_logs.xlsx
+
+./tools/__pycache__/
