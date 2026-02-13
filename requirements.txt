@@ -25,3 +25,4 @@ tiktoken
 langchain-chroma  # Alternative Chroma integration
 langchain-groq
 langchain.chains
+cryptography>=46.0.5 # not directly required, pinned by Snyk to avoid a vulnerability
